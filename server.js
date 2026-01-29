@@ -1,96 +1,81 @@
-const WebSocket = require("ws");
+import WebSocket, { WebSocketServer } from "ws";
+import http from "http";
 
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: PORT });
+const server = http.createServer();
+const wss = new WebSocketServer({ server });
 
 let players = [];
 let currentTurn = 0;
 
 wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
-    let data;
-    try {
-      data = JSON.parse(msg);
-    } catch {
-      return;
-    }
+  console.log("Client connected");
 
-    // 🔹 JOIN GAME
-    if (data.type === "JOIN") {
-      const playerId = players.length;
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data);
 
+    // JOIN GAME
+    if (msg.type === "joinGame") {
       const player = {
-        id: playerId,
-        name: data.name,
-        password: data.password,
-        money: 15000,
+        id: players.length,
+        name: msg.name,
         position: 0,
-        ws
+        money: 1500
       };
 
       players.push(player);
+      ws.playerId = player.id;
 
-      // Send INIT to this player
       ws.send(JSON.stringify({
-        type: "INIT",
-        playerId,
-        currentTurn,
-        players: players.map(p => ({
-          id: p.id,
-          name: p.name,
-          money: p.money,
-          position: p.position
-        }))
+        type: "joined",
+        player,
+        yourTurn: player.id === currentTurn
       }));
 
-      // Notify everyone
       broadcast({
-        type: "PLAYERS_UPDATE",
-        players: players.map(p => ({
-          id: p.id,
-          name: p.name,
-          money: p.money,
-          position: p.position
-        }))
+        type: "players",
+        players,
+        currentTurn
       });
-
-      return;
     }
 
-    // 🔹 ROLL DICE
-    if (data.type === "ROLL") {
-      if (data.playerId !== currentTurn) return;
+    // ROLL DICE
+    if (msg.type === "rollDice") {
+      if (ws.playerId !== currentTurn) {
+        ws.send(JSON.stringify({
+          type: "error",
+          message: "Not your turn"
+        }));
+        return;
+      }
 
       const dice = Math.floor(Math.random() * 6) + 1;
-      const player = players[currentTurn];
-
-      player.position = (player.position + dice) % 12;
+      players[currentTurn].position =
+        (players[currentTurn].position + dice) % 12;
 
       currentTurn = (currentTurn + 1) % players.length;
 
       broadcast({
-        type: "ROLL_RESULT",
+        type: "diceResult",
         dice,
-        playerId: player.id,
-        position: player.position,
+        players,
         currentTurn
       });
     }
   });
 
   ws.on("close", () => {
-    players = players.filter(p => p.ws !== ws);
-    currentTurn = 0;
+    console.log("Client disconnected");
   });
 });
 
-function broadcast(data) {
-  const msg = JSON.stringify(data);
-  players.forEach(p => {
-    if (p.ws.readyState === WebSocket.OPEN) {
-      p.ws.send(msg);
+function broadcast(msg) {
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(msg));
     }
   });
 }
 
-console.log("✅ Monopoly WebSocket running on", PORT);
+server.listen(process.env.PORT || 8080, () => {
+  console.log("Server running");
+});
