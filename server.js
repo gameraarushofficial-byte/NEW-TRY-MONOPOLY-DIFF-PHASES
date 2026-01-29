@@ -1,79 +1,48 @@
-import http from "http";
-import { WebSocketServer } from "ws";
+const WebSocket = require("ws");
 
-const server = http.createServer();
-const wss = new WebSocketServer({ server });
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocket.Server({ port: PORT });
 
-/**
- * GAME STATE (GLOBAL, SIMPLE, SAFE)
- */
-let players = []; // [{ name, ws }]
+let players = [];
 let turnIndex = 0;
 
-function broadcast(data) {
-  const msg = JSON.stringify(data);
-  players.forEach(p => {
-    if (p.ws.readyState === 1) {
-      p.ws.send(msg);
-    }
-  });
-}
-
 wss.on("connection", (ws) => {
-  console.log("Client connected");
-
-  ws.on("message", (raw) => {
+  ws.on("message", (message) => {
     let data;
     try {
-      data = JSON.parse(raw);
+      data = JSON.parse(message);
     } catch {
       return;
     }
 
-    /**
-     * JOIN GAME
-     */
+    // ===== JOIN =====
     if (data.type === "join") {
       if (players.length >= 2) {
-        ws.send(JSON.stringify({ type: "error", message: "Game full" }));
-        return;
-      }
-
-      const playerIndex = players.length;
-      players.push({ name: data.name, ws });
-
-      ws.playerIndex = playerIndex;
-
-      ws.send(JSON.stringify({
-        type: "joined",
-        playerIndex,
-        turnIndex,
-        players: players.map(p => p.name)
-      }));
-
-      broadcast({
-        type: "state",
-        turnIndex,
-        players: players.map(p => p.name)
-      });
-
-      console.log(`Player ${data.name} joined as ${playerIndex}`);
-    }
-
-    /**
-     * ROLL DICE
-     */
-    if (data.type === "roll") {
-      if (ws.playerIndex !== turnIndex) {
         ws.send(JSON.stringify({
           type: "error",
-          message: "Not your turn"
+          message: "Game full"
         }));
         return;
       }
 
-      const dice = Math.floor(Math.random() * 6) + 1;
+      const playerIndex = players.length;
+      players.push(ws);
 
+      ws.send(JSON.stringify({
+        type: "joined",
+        playerIndex,
+        turnIndex
+      }));
+
+      broadcastState();
+    }
+
+    // ===== ROLL =====
+    if (data.type === "roll") {
+      const playerIndex = players.indexOf(ws);
+      if (playerIndex !== turnIndex) return;
+
+      const dice = Math.floor(Math.random() * 6) + 1;
       turnIndex = (turnIndex + 1) % players.length;
 
       broadcast({
@@ -81,30 +50,29 @@ wss.on("connection", (ws) => {
         dice,
         turnIndex
       });
-
-      console.log(`Dice rolled: ${dice}`);
     }
   });
 
   ws.on("close", () => {
-    console.log("Client disconnected");
-
-    if (typeof ws.playerIndex === "number") {
-      players = players.filter(p => p.ws !== ws);
-
-      // Reset game safely
-      turnIndex = 0;
-
-      broadcast({
-        type: "state",
-        turnIndex,
-        players: players.map(p => p.name)
-      });
-    }
+    players = players.filter(p => p !== ws);
+    turnIndex = 0;
+    broadcastState();
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log("Server listening on", PORT);
-});
+function broadcastState() {
+  broadcast({
+    type: "state",
+    turnIndex
+  });
+}
+
+function broadcast(data) {
+  players.forEach(p => {
+    if (p.readyState === WebSocket.OPEN) {
+      p.send(JSON.stringify(data));
+    }
+  });
+}
+
+console.log("Server running on port", PORT);
