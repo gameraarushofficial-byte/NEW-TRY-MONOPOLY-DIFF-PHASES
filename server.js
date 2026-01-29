@@ -1,96 +1,85 @@
-import { WebSocketServer } from "ws";
-import { v4 as uuidv4 } from "uuid";
+const WebSocket = require("ws");
 
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
-/* ================= GAME STATE ================= */
-
-const players = []; // { playerId, socket }
-let currentTurnIndex = 0;
-
-/* ================= HELPERS ================= */
+const gameState = {
+  players: {}, // playerId -> { name, position }
+  turnOrder: [],
+  currentTurnIndex: 0,
+};
 
 function broadcast(data) {
   const msg = JSON.stringify(data);
-  players.forEach(p => {
-    if (p.socket.readyState === 1) {
-      p.socket.send(msg);
-    }
+  wss.clients.forEach(c => {
+    if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
 
-function getPlayerIndex(playerId) {
-  return players.findIndex(p => p.playerId === playerId);
+function currentPlayerId() {
+  return gameState.turnOrder[gameState.currentTurnIndex];
 }
 
-/* ================= WEBSOCKET ================= */
+wss.on("connection", (ws) => {
+  ws.playerId = null;
 
-wss.on("connection", (socket) => {
-  let playerId = null;
-
-  socket.on("message", (raw) => {
+  ws.on("message", (raw) => {
     const msg = JSON.parse(raw);
 
-    /* ---- JOIN / RECONNECT ---- */
+    // JOIN GAME
     if (msg.type === "JOIN") {
-      playerId = msg.playerId || uuidv4();
-
-      let index = getPlayerIndex(playerId);
-
-      if (index === -1) {
-        players.push({ playerId, socket });
-        index = players.length - 1;
-      } else {
-        players[index].socket = socket; // reconnect
+      if (gameState.turnOrder.length >= 2) {
+        ws.send(JSON.stringify({ type: "ERROR", message: "Game full" }));
+        return;
       }
 
-      socket.send(JSON.stringify({
-        type: "JOINED",
-        playerId,
-        playerIndex: index,
-        currentTurnIndex
-      }));
+      const playerId = "p" + Date.now();
+      ws.playerId = playerId;
+
+      gameState.players[playerId] = {
+        name: msg.name,
+        position: 0,
+      };
+      gameState.turnOrder.push(playerId);
 
       broadcast({
-        type: "TURN_UPDATE",
-        currentTurnIndex
+        type: "STATE",
+        state: gameState,
       });
     }
 
-    /* ---- ROLL DICE ---- */
-    if (msg.type === "ROLL_DICE") {
-      const index = getPlayerIndex(playerId);
-
-      if (index !== currentTurnIndex) {
-        socket.send(JSON.stringify({
-          type: "ERROR",
-          message: "Not your turn"
-        }));
+    // ROLL DICE
+    if (msg.type === "ROLL") {
+      if (ws.playerId !== currentPlayerId()) {
+        ws.send(JSON.stringify({ type: "ERROR", message: "Not your turn" }));
         return;
       }
 
       const dice = Math.floor(Math.random() * 6) + 1;
+      gameState.players[ws.playerId].position += dice;
+
+      gameState.currentTurnIndex =
+        (gameState.currentTurnIndex + 1) % gameState.turnOrder.length;
 
       broadcast({
-        type: "DICE_ROLLED",
-        playerIndex: index,
-        dice
-      });
-
-      currentTurnIndex = (currentTurnIndex + 1) % players.length;
-
-      broadcast({
-        type: "TURN_UPDATE",
-        currentTurnIndex
+        type: "ROLL_RESULT",
+        dice,
+        state: gameState,
       });
     }
   });
 
-  socket.on("close", () => {
-    // Do NOTHING on disconnect
-    // Player can reconnect safely
+  ws.on("close", () => {
+    if (!ws.playerId) return;
+
+    delete gameState.players[ws.playerId];
+    gameState.turnOrder = gameState.turnOrder.filter(p => p !== ws.playerId);
+
+    if (gameState.currentTurnIndex >= gameState.turnOrder.length) {
+      gameState.currentTurnIndex = 0;
+    }
+
+    broadcast({ type: "STATE", state: gameState });
   });
 });
 
-console.log("✅ WebSocket server running on", PORT);
+console.log("🟢 Monopoly server running");
