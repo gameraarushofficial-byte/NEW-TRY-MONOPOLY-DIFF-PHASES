@@ -1,82 +1,79 @@
-const http = require("http");
-const WebSocket = require("ws");
+import http from "http";
+import { WebSocketServer } from "ws";
 
-const server = http.createServer();
-const wss = new WebSocket.Server({ server });
+const PORT = process.env.PORT || 8080;
 
-const gameState = {
-  players: {},
-  turnOrder: [],
-  currentTurnIndex: 0,
-};
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("Delhi Monopoly WebSocket Server Running");
+});
+
+const wss = new WebSocketServer({ server });
+
+let players = [];
+let currentTurn = 0;
 
 function broadcast(data) {
   const msg = JSON.stringify(data);
-  wss.clients.forEach(c => {
-    if (c.readyState === WebSocket.OPEN) c.send(msg);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) {
+      client.send(msg);
+    }
   });
 }
 
-function currentPlayerId() {
-  return gameState.turnOrder[gameState.currentTurnIndex];
-}
-
-wss.on("connection", (ws) => {
+wss.on("connection", ws => {
   ws.playerId = null;
 
-  ws.on("message", (raw) => {
-    const msg = JSON.parse(raw);
+  ws.on("message", message => {
+    const data = JSON.parse(message);
 
-    if (msg.type === "JOIN") {
-      if (gameState.turnOrder.length >= 2) {
-        ws.send(JSON.stringify({ type: "ERROR", message: "Game full" }));
+    if (data.type === "join") {
+      if (players.length >= 2) {
+        ws.send(JSON.stringify({ type: "error", message: "Game full" }));
         return;
       }
 
-      const playerId = "p" + Date.now();
-      ws.playerId = playerId;
+      ws.playerId = players.length;
+      players.push({ name: data.name });
 
-      gameState.players[playerId] = {
-        name: msg.name,
-        position: 0,
-      };
+      ws.send(JSON.stringify({
+        type: "joined",
+        playerId: ws.playerId
+      }));
 
-      gameState.turnOrder.push(playerId);
-
-      broadcast({ type: "STATE", state: gameState });
+      broadcast({
+        type: "state",
+        players,
+        currentTurn
+      });
     }
 
-    if (msg.type === "ROLL") {
-      if (ws.playerId !== currentPlayerId()) {
-        ws.send(JSON.stringify({ type: "ERROR", message: "Not your turn" }));
+    if (data.type === "roll") {
+      if (ws.playerId !== currentTurn) {
+        ws.send(JSON.stringify({ type: "error", message: "Not your turn" }));
         return;
       }
 
       const dice = Math.floor(Math.random() * 6) + 1;
-      gameState.players[ws.playerId].position += dice;
+      currentTurn = (currentTurn + 1) % players.length;
 
-      gameState.currentTurnIndex =
-        (gameState.currentTurnIndex + 1) % gameState.turnOrder.length;
-
-      broadcast({ type: "ROLL_RESULT", dice, state: gameState });
+      broadcast({
+        type: "dice",
+        dice,
+        currentTurn
+      });
     }
   });
 
   ws.on("close", () => {
-    if (!ws.playerId) return;
-
-    delete gameState.players[ws.playerId];
-    gameState.turnOrder = gameState.turnOrder.filter(p => p !== ws.playerId);
-
-    if (gameState.currentTurnIndex >= gameState.turnOrder.length) {
-      gameState.currentTurnIndex = 0;
-    }
-
-    broadcast({ type: "STATE", state: gameState });
+    players = [];
+    currentTurn = 0;
+    broadcast({ type: "reset" });
   });
 });
 
-const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log("🟢 Server listening on", PORT);
+  console.log(`🟢 Server listening on ${PORT}`);
 });
+
