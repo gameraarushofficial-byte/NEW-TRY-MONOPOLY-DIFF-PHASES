@@ -1,78 +1,69 @@
-const WebSocket = require("ws");
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
 
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: PORT });
+const app = express();
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: "*"
+  }
+});
 
 let players = [];
-let turnIndex = 0;
+let currentTurn = 0;
 
-wss.on("connection", (ws) => {
-  ws.on("message", (message) => {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch {
+io.on("connection", (socket) => {
+  console.log("Connected:", socket.id);
+
+  socket.on("joinGame", (name) => {
+    if (!name || name.trim() === "") return;
+
+    if (players.length >= 2) {
+      socket.emit("errorMsg", "Room full");
       return;
     }
 
-    // ===== JOIN =====
-    if (data.type === "join") {
-      if (players.length >= 2) {
-        ws.send(JSON.stringify({
-          type: "error",
-          message: "Game full"
-        }));
-        return;
-      }
+    players.push({
+      id: socket.id,
+      name,
+      position: 0
+    });
 
-      const playerIndex = players.length;
-      players.push(ws);
-
-      ws.send(JSON.stringify({
-        type: "joined",
-        playerIndex,
-        turnIndex
-      }));
-
-      broadcastState();
-    }
-
-    // ===== ROLL =====
-    if (data.type === "roll") {
-      const playerIndex = players.indexOf(ws);
-      if (playerIndex !== turnIndex) return;
-
-      const dice = Math.floor(Math.random() * 6) + 1;
-      turnIndex = (turnIndex + 1) % players.length;
-
-      broadcast({
-        type: "dice",
-        dice,
-        turnIndex
-      });
-    }
+    io.emit("playersUpdate", players);
+    io.emit("turnUpdate", players[currentTurn]?.id);
   });
 
-  ws.on("close", () => {
-    players = players.filter(p => p !== ws);
-    turnIndex = 0;
-    broadcastState();
+  socket.on("rollDice", () => {
+    if (players[currentTurn]?.id !== socket.id) {
+      socket.emit("errorMsg", "Not your turn");
+      return;
+    }
+
+    const dice = Math.floor(Math.random() * 6) + 1;
+    players[currentTurn].position += dice;
+
+    currentTurn = (currentTurn + 1) % players.length;
+
+    io.emit("diceResult", {
+      dice,
+      players,
+      nextTurn: players[currentTurn].id
+    });
+  });
+
+  socket.on("disconnect", () => {
+    players = players.filter(p => p.id !== socket.id);
+    currentTurn = 0;
+
+    io.emit("playersUpdate", players);
+    if (players.length > 0) {
+      io.emit("turnUpdate", players[0].id);
+    }
   });
 });
 
-function broadcastState() {
-  broadcast({
-    type: "state",
-    turnIndex
-  });
-}
-
-function broadcast(data) {
-  players.forEach(p => {
-    if (p.readyState === WebSocket.OPEN) {
-      p.send(JSON.stringify(data));
-    }
-  });
-}
-
-console.log("Server running on port", PORT);
+server.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
