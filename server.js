@@ -1,81 +1,96 @@
-import WebSocket, { WebSocketServer } from "ws";
-import http from "http";
+import { WebSocketServer } from "ws";
+import { v4 as uuidv4 } from "uuid";
 
-const server = http.createServer();
-const wss = new WebSocketServer({ server });
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocketServer({ port: PORT });
 
-let players = [];
-let currentTurn = 0;
+/* ================= GAME STATE ================= */
 
-wss.on("connection", (ws) => {
-  console.log("Client connected");
+const players = []; // { playerId, socket }
+let currentTurnIndex = 0;
 
-  ws.on("message", (data) => {
-    const msg = JSON.parse(data);
+/* ================= HELPERS ================= */
 
-    // JOIN GAME
-    if (msg.type === "joinGame") {
-      const player = {
-        id: players.length,
-        name: msg.name,
-        position: 0,
-        money: 1500
-      };
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  players.forEach(p => {
+    if (p.socket.readyState === 1) {
+      p.socket.send(msg);
+    }
+  });
+}
 
-      players.push(player);
-      ws.playerId = player.id;
+function getPlayerIndex(playerId) {
+  return players.findIndex(p => p.playerId === playerId);
+}
 
-      ws.send(JSON.stringify({
-        type: "joined",
-        player,
-        yourTurn: player.id === currentTurn
+/* ================= WEBSOCKET ================= */
+
+wss.on("connection", (socket) => {
+  let playerId = null;
+
+  socket.on("message", (raw) => {
+    const msg = JSON.parse(raw);
+
+    /* ---- JOIN / RECONNECT ---- */
+    if (msg.type === "JOIN") {
+      playerId = msg.playerId || uuidv4();
+
+      let index = getPlayerIndex(playerId);
+
+      if (index === -1) {
+        players.push({ playerId, socket });
+        index = players.length - 1;
+      } else {
+        players[index].socket = socket; // reconnect
+      }
+
+      socket.send(JSON.stringify({
+        type: "JOINED",
+        playerId,
+        playerIndex: index,
+        currentTurnIndex
       }));
 
       broadcast({
-        type: "players",
-        players,
-        currentTurn
+        type: "TURN_UPDATE",
+        currentTurnIndex
       });
     }
 
-    // ROLL DICE
-    if (msg.type === "rollDice") {
-      if (ws.playerId !== currentTurn) {
-        ws.send(JSON.stringify({
-          type: "error",
+    /* ---- ROLL DICE ---- */
+    if (msg.type === "ROLL_DICE") {
+      const index = getPlayerIndex(playerId);
+
+      if (index !== currentTurnIndex) {
+        socket.send(JSON.stringify({
+          type: "ERROR",
           message: "Not your turn"
         }));
         return;
       }
 
       const dice = Math.floor(Math.random() * 6) + 1;
-      players[currentTurn].position =
-        (players[currentTurn].position + dice) % 12;
-
-      currentTurn = (currentTurn + 1) % players.length;
 
       broadcast({
-        type: "diceResult",
-        dice,
-        players,
-        currentTurn
+        type: "DICE_ROLLED",
+        playerIndex: index,
+        dice
+      });
+
+      currentTurnIndex = (currentTurnIndex + 1) % players.length;
+
+      broadcast({
+        type: "TURN_UPDATE",
+        currentTurnIndex
       });
     }
   });
 
-  ws.on("close", () => {
-    console.log("Client disconnected");
+  socket.on("close", () => {
+    // Do NOTHING on disconnect
+    // Player can reconnect safely
   });
 });
 
-function broadcast(msg) {
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(msg));
-    }
-  });
-}
-
-server.listen(process.env.PORT || 8080, () => {
-  console.log("Server running");
-});
+console.log("✅ WebSocket server running on", PORT);
