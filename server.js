@@ -1,9 +1,11 @@
+const http = require("http");
 const WebSocket = require("ws");
 
-const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
+const server = http.createServer();
+const wss = new WebSocket.Server({ server });
 
 const gameState = {
-  players: {}, // playerId -> { name, position }
+  players: {},
   turnOrder: [],
   currentTurnIndex: 0,
 };
@@ -25,7 +27,6 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     const msg = JSON.parse(raw);
 
-    // JOIN GAME
     if (msg.type === "JOIN") {
       if (gameState.turnOrder.length >= 2) {
         ws.send(JSON.stringify({ type: "ERROR", message: "Game full" }));
@@ -39,15 +40,12 @@ wss.on("connection", (ws) => {
         name: msg.name,
         position: 0,
       };
+
       gameState.turnOrder.push(playerId);
 
-      broadcast({
-        type: "STATE",
-        state: gameState,
-      });
+      broadcast({ type: "STATE", state: gameState });
     }
 
-    // ROLL DICE
     if (msg.type === "ROLL") {
       if (ws.playerId !== currentPlayerId()) {
         ws.send(JSON.stringify({ type: "ERROR", message: "Not your turn" }));
@@ -60,11 +58,7 @@ wss.on("connection", (ws) => {
       gameState.currentTurnIndex =
         (gameState.currentTurnIndex + 1) % gameState.turnOrder.length;
 
-      broadcast({
-        type: "ROLL_RESULT",
-        dice,
-        state: gameState,
-      });
+      broadcast({ type: "ROLL_RESULT", dice, state: gameState });
     }
   });
 
@@ -82,4 +76,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-console.log("🟢 Monopoly server running");
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+  console.log("🟢 Server listening on", PORT);
+});
