@@ -1,79 +1,110 @@
 import http from "http";
 import { WebSocketServer } from "ws";
 
-const PORT = process.env.PORT || 8080;
-
-const server = http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end("Delhi Monopoly WebSocket Server Running");
-});
-
+const server = http.createServer();
 const wss = new WebSocketServer({ server });
 
-let players = [];
-let currentTurn = 0;
+/**
+ * GAME STATE (GLOBAL, SIMPLE, SAFE)
+ */
+let players = []; // [{ name, ws }]
+let turnIndex = 0;
 
 function broadcast(data) {
   const msg = JSON.stringify(data);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) {
-      client.send(msg);
+  players.forEach(p => {
+    if (p.ws.readyState === 1) {
+      p.ws.send(msg);
     }
   });
 }
 
-wss.on("connection", ws => {
-  ws.playerId = null;
+wss.on("connection", (ws) => {
+  console.log("Client connected");
 
-  ws.on("message", message => {
-    const data = JSON.parse(message);
+  ws.on("message", (raw) => {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return;
+    }
 
+    /**
+     * JOIN GAME
+     */
     if (data.type === "join") {
       if (players.length >= 2) {
         ws.send(JSON.stringify({ type: "error", message: "Game full" }));
         return;
       }
 
-      ws.playerId = players.length;
-      players.push({ name: data.name });
+      const playerIndex = players.length;
+      players.push({ name: data.name, ws });
+
+      ws.playerIndex = playerIndex;
 
       ws.send(JSON.stringify({
         type: "joined",
-        playerId: ws.playerId
+        playerIndex,
+        turnIndex,
+        players: players.map(p => p.name)
       }));
 
       broadcast({
         type: "state",
-        players,
-        currentTurn
+        turnIndex,
+        players: players.map(p => p.name)
       });
+
+      console.log(`Player ${data.name} joined as ${playerIndex}`);
     }
 
+    /**
+     * ROLL DICE
+     */
     if (data.type === "roll") {
-      if (ws.playerId !== currentTurn) {
-        ws.send(JSON.stringify({ type: "error", message: "Not your turn" }));
+      if (ws.playerIndex !== turnIndex) {
+        ws.send(JSON.stringify({
+          type: "error",
+          message: "Not your turn"
+        }));
         return;
       }
 
       const dice = Math.floor(Math.random() * 6) + 1;
-      currentTurn = (currentTurn + 1) % players.length;
+
+      turnIndex = (turnIndex + 1) % players.length;
 
       broadcast({
         type: "dice",
         dice,
-        currentTurn
+        turnIndex
       });
+
+      console.log(`Dice rolled: ${dice}`);
     }
   });
 
   ws.on("close", () => {
-    players = [];
-    currentTurn = 0;
-    broadcast({ type: "reset" });
+    console.log("Client disconnected");
+
+    if (typeof ws.playerIndex === "number") {
+      players = players.filter(p => p.ws !== ws);
+
+      // Reset game safely
+      turnIndex = 0;
+
+      broadcast({
+        type: "state",
+        turnIndex,
+        players: players.map(p => p.name)
+      });
+    }
   });
 });
 
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🟢 Server listening on ${PORT}`);
+  console.log("Server listening on", PORT);
 });
-
